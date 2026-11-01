@@ -1496,6 +1496,19 @@ RACK_REORDER_KEY = BalancingParameter(
 RACK_DEFER_KEY = BalancingParameter(
     "rack_defer_loss", "SPRAY_RACK_DEFER_LOSS", False, _flag, _on_off
 )
+# path_defer_loss, after rack_defer_loss and read only with tail_loss_rtts
+# above zero: the same for the sends the per-path rule declares lost, an
+# answer to a send along a path declaring lost every older send outstanding
+# along that path; absent, false.
+PATH_DEFER_KEY = BalancingParameter(
+    "path_defer_loss", "SPRAY_PATH_DEFER_LOSS", False, _flag, _on_off
+)
+# Each key that defers the tell of its rule's losses by tail_loss_rtts base
+# RTTs, and the keys its rule needs set besides.
+DEFER_LOSS_RULE_KEYS: dict[str, tuple[str, ...]] = {
+    "rack_defer_loss": ("rack_reorder_ns",),
+    "path_defer_loss": (),
+}
 SPRAY_UNIFORM_KEYS: tuple[BalancingParameter, ...] = (
     PATH_SEQ_KEY,
     *TAIL_RECOVERY_KEYS,
@@ -1507,6 +1520,7 @@ SPRAY_UNIFORM_KEYS: tuple[BalancingParameter, ...] = (
     DUPLICATE_REPORT_KEY,
     RACK_REORDER_KEY,
     RACK_DEFER_KEY,
+    PATH_DEFER_KEY,
 )
 # answer_path_seq with answer_probe_interval_ns and answer_hold_clean, last,
 # read only by the loss hold selectors under ack_route spray with path_seq
@@ -1642,8 +1656,8 @@ LOSS_HOLD_KEYS: tuple[BalancingParameter, ...] = (
 # is the spines, defaults filled in; then the loss hold's, path_seq among
 # them, tail recovery's, ack_loss_rtts, receiver_tail_missing, path_state,
 # ack_route, ack_route_oracle, copy_expiry, stray_path_seq, coverage_first,
-# duplicate_report, rack_reorder_ns, rack_defer_loss and the answer path
-# sequences' keys.
+# duplicate_report, rack_reorder_ns, rack_defer_loss, path_defer_loss and the
+# answer path sequences' keys.
 LOSS_HOLD_PARAMETERS: dict[str, tuple[BalancingParameter, ...]] = {
     "reps_hold": (
         *SELECTOR_PARAMETERS["reps"],
@@ -1659,6 +1673,7 @@ LOSS_HOLD_PARAMETERS: dict[str, tuple[BalancingParameter, ...]] = {
         DUPLICATE_REPORT_KEY,
         RACK_REORDER_KEY,
         RACK_DEFER_KEY,
+        PATH_DEFER_KEY,
         *ANSWER_PATH_SEQ_KEYS,
     ),
     "reps_flow_hold": (
@@ -1675,6 +1690,7 @@ LOSS_HOLD_PARAMETERS: dict[str, tuple[BalancingParameter, ...]] = {
         DUPLICATE_REPORT_KEY,
         RACK_REORDER_KEY,
         RACK_DEFER_KEY,
+        PATH_DEFER_KEY,
         *ANSWER_PATH_SEQ_KEYS,
     ),
     "mrc_hold": (
@@ -1695,6 +1711,7 @@ LOSS_HOLD_PARAMETERS: dict[str, tuple[BalancingParameter, ...]] = {
         DUPLICATE_REPORT_KEY,
         RACK_REORDER_KEY,
         RACK_DEFER_KEY,
+        PATH_DEFER_KEY,
         *ANSWER_PATH_SEQ_KEYS,
     ),
 }
@@ -1750,6 +1767,7 @@ LOSS_HOLD_WRITTEN_WHEN_SET_PARAMETERS = {
     "duplicate_report",
     "rack_reorder_ns",
     "rack_defer_loss",
+    "path_defer_loss",
     "answer_path_seq",
     "answer_probe_interval_ns",
     "answer_hold_clean",
@@ -2006,8 +2024,9 @@ def _spray_uniform_keys(
     """path_seq, tail_recovery, tail_recovery_delay_ns, tail_loss_rtts,
     ack_loss_rtts, path_state, ack_route, ack_route_oracle, ack_route_set_size,
     ack_route_set_probe_rtts, ack_route_set_reply, stray_path_seq,
-    coverage_first, duplicate_report, rack_reorder_ns and rack_defer_loss as
-    given, each only when set, refused where the backend refuses them."""
+    coverage_first, duplicate_report, rack_reorder_ns, rack_defer_loss and
+    path_defer_loss as given, each only when set, refused where the backend
+    refuses them."""
     parsed = _parsed(
         balancing,
         tuple(parameter for parameter in SPRAY_UNIFORM_KEYS if parameter.name in balancing),
@@ -2015,7 +2034,7 @@ def _spray_uniform_keys(
     _require_tail_recovery(balancing, dict(parsed))
     _require_ack_route(balancing, dict(parsed))
     _require_duplicate_report(balancing, dict(parsed))
-    _require_rack_defer_loss(balancing, dict(parsed))
+    _require_defer_loss(balancing, dict(parsed))
     _require_stray_path_seq(balancing, dict(parsed))
     return parsed
 
@@ -2092,18 +2111,20 @@ def _require_duplicate_report(
         )
 
 
-def _require_rack_defer_loss(
+def _require_defer_loss(
     balancing: dict[str, Any], values: dict[str, ParameterValue]
 ) -> None:
-    """rack_defer_loss is read only with rack_reorder_ns set and tail_loss_rtts
-    above zero, as the backend reads it."""
-    if "rack_defer_loss" in balancing and (
-        "rack_reorder_ns" not in balancing or values.get("tail_loss_rtts", 1.0) == 0
-    ):
-        raise ValueError(
-            "network.load_balancing.rack_defer_loss requires rack_reorder_ns and "
-            "tail_loss_rtts above zero"
-        )
+    """Each key of DEFER_LOSS_RULE_KEYS is read only with its rule's keys set
+    and tail_loss_rtts above zero, as the backend reads it."""
+    for name, rule_keys in DEFER_LOSS_RULE_KEYS.items():
+        if name in balancing and (
+            any(key not in balancing for key in rule_keys)
+            or values.get("tail_loss_rtts", 1.0) == 0
+        ):
+            raise ValueError(
+                f"network.load_balancing.{name} requires "
+                + " and ".join((*rule_keys, "tail_loss_rtts above zero"))
+            )
 
 
 def _require_answer_path_seq(
@@ -2225,7 +2246,7 @@ def _load_loss_hold_selector(
     _require_stray_path_seq(balancing, values)
     _require_answer_path_seq(balancing, values)
     _require_duplicate_report(balancing, values)
-    _require_rack_defer_loss(balancing, values)
+    _require_defer_loss(balancing, values)
     if "copy_expiry" in balancing and values.get("sentinel_mode", "data") != "duplicate":
         raise ValueError(
             "network.load_balancing.copy_expiry requires sentinel_mode 'duplicate'"

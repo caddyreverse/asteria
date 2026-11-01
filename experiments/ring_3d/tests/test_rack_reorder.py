@@ -1,4 +1,5 @@
-"""rack_reorder_ns and rack_defer_loss under spray_uniform with any selector."""
+"""rack_reorder_ns, rack_defer_loss and path_defer_loss under spray_uniform
+with any selector."""
 
 from __future__ import annotations
 
@@ -77,9 +78,10 @@ class RackReorderTest(unittest.TestCase):
         self.assertNotIn("rack_defer_loss", manifest["load_balancing"])
 
     def test_defer_loss_needs_the_rule_and_a_delay(self) -> None:
-        with self.assertRaisesRegex(ValueError, "rack_defer_loss requires"):
+        refusal = "rack_defer_loss requires rack_reorder_ns and tail_loss_rtts above zero"
+        with self.assertRaisesRegex(ValueError, refusal):
             self.generated({**HOLD, "rack_defer_loss": True})
-        with self.assertRaisesRegex(ValueError, "rack_defer_loss requires"):
+        with self.assertRaisesRegex(ValueError, refusal):
             self.generated(
                 {
                     **HOLD,
@@ -90,6 +92,47 @@ class RackReorderTest(unittest.TestCase):
                     "rack_defer_loss": True,
                 }
             )
+
+    def test_path_defer_loss_written_when_set(self) -> None:
+        for balancing in (
+            HOLD,
+            {"mode": "spray_uniform"},
+            {"mode": "spray_uniform", "selector": "reps_spine"},
+        ):
+            for value, rendered in ((True, "on"), (False, "off")):
+                with self.subTest(balancing=balancing, value=value):
+                    manifest, config = self.generated({**balancing, "path_defer_loss": value})
+                    self.assertIn(f"\nSPRAY_PATH_DEFER_LOSS {rendered}\n", config)
+                    self.assertIs(manifest["load_balancing"]["path_defer_loss"], value)
+        manifest, config = self.generated(HOLD)
+        self.assertNotIn("SPRAY_PATH_DEFER_LOSS", config)
+        self.assertNotIn("path_defer_loss", manifest["load_balancing"])
+
+    def test_path_defer_loss_refused_outside_spray_uniform(self) -> None:
+        for balancing, refusal in (
+            ({"mode": "ecmp"}, "'ecmp' takes no other key"),
+            ({"mode": "ev_hash"}, r"does not take \['path_defer_loss'\]"),
+            ({"mode": "spray_policy"}, r"does not take \['path_defer_loss'\]"),
+        ):
+            with self.subTest(balancing=balancing), self.assertRaisesRegex(
+                ValueError, refusal
+            ):
+                self.generated({**balancing, "path_defer_loss": True})
+
+    def test_path_defer_loss_needs_a_delay(self) -> None:
+        for balancing in (HOLD, {"mode": "spray_uniform"}):
+            with self.subTest(balancing=balancing), self.assertRaisesRegex(
+                ValueError, "path_defer_loss requires tail_loss_rtts above zero"
+            ):
+                self.generated(
+                    {
+                        **balancing,
+                        "path_seq": True,
+                        "tail_recovery": True,
+                        "tail_loss_rtts": 0,
+                        "path_defer_loss": True,
+                    }
+                )
 
 
 if __name__ == "__main__":
