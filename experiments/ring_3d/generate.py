@@ -407,14 +407,27 @@ class Combine:
 @dataclass(frozen=True)
 class Background:
     """The background load of an all-to-all whose group is the first hosts of
-    every leaf: each other host, host i of leaf l of L, sends to host i of
-    leaf (l + 1 + i mod (L - 1)) mod L, ``leaf_shift``, so that every one
-    sends one flow and receives one, and each leaf sends evenly to the
-    others. With each of the all-to-all's collectives each sends what a
-    member sends to the members on other leaves, paced at ``rate_bps``."""
+    every leaf, sent by the other hosts with each of the all-to-all's
+    collectives, one message a sender, paced at ``rate_bps``.
+
+    ``leaf_shift``: host i of leaf l of L sends to host i of leaf
+    (l + 1 + i mod (L - 1)) mod L, so that every one sends one flow and
+    receives one, and each leaf sends evenly to the others; each sends what a
+    member sends to the members on other leaves. ``leaf_fan_in``: host i of
+    every leaf but leaf 0 sends ``message_bytes`` to host i of leaf 0, so that
+    each of leaf 0's other hosts receives one flow from every other leaf and
+    sends none."""
 
     pattern: str
     rate_bps: int
+    message_bytes: int | None = None
+
+    def destination(self, leaf: int, index: int, leaves: int, hosts_per_leaf: int) -> int | None:
+        """The rank host ``index`` of ``leaf`` sends to; None if it sends none."""
+        if self.pattern == "leaf_shift":
+            return ((leaf + 1 + index % (leaves - 1)) % leaves) * hosts_per_leaf + index
+        # leaf_fan_in: host index of leaf 0 is rank index.
+        return None if leaf == 0 else index
 
 
 @dataclass(frozen=True)
@@ -537,6 +550,8 @@ class Workload:
                     "pattern": background.pattern,
                     "rate_bps": background.rate_bps,
                 }
+                if background.message_bytes is not None:
+                    manifest["background"]["message_bytes"] = background.message_bytes
             return manifest
         return {"kind": self.kind}
 
@@ -870,14 +885,27 @@ def _load_all_to_all(value: dict[str, Any]) -> AllToAll:
     )
 
 
+BACKGROUND_KEYS = {
+    "leaf_shift": {"pattern", "rate"},
+    "leaf_fan_in": {"pattern", "rate", "message_bytes"},
+}
+
+
 def _load_background(value: Any) -> Background:
-    """workload.background: its pattern, leaf_shift, and its pacing rate."""
-    if not isinstance(value, dict) or set(value) != {"pattern", "rate"}:
+    """workload.background: its pattern, leaf_shift or leaf_fan_in, its pacing
+    rate and, under leaf_fan_in, the bytes of each message."""
+    if not isinstance(value, dict):
+        raise ValueError("workload.background must be an object")
+    pattern = value.get("pattern")
+    if not isinstance(pattern, str) or pattern not in BACKGROUND_KEYS:
         raise ValueError(
-            "workload.background must be an object of exactly ['pattern', 'rate']"
+            "workload.background.pattern must be 'leaf_shift' or 'leaf_fan_in'"
         )
-    if value["pattern"] != "leaf_shift":
-        raise ValueError("workload.background.pattern must be 'leaf_shift'")
+    if set(value) != BACKGROUND_KEYS[pattern]:
+        raise ValueError(
+            f"workload.background under '{pattern}' must be an object of exactly "
+            f"{sorted(BACKGROUND_KEYS[pattern])}"
+        )
     rate = value["rate"]
     if not isinstance(rate, str) or not rate.endswith("Gbps"):
         raise ValueError("workload.background.rate must be a rate such as 350Gbps")
@@ -889,7 +917,17 @@ def _load_background(value: Any) -> Background:
         ) from None
     if rate_bps <= 0:
         raise ValueError("workload.background.rate must be above 0")
-    return Background(pattern="leaf_shift", rate_bps=rate_bps)
+    return Background(
+        pattern=pattern,
+        rate_bps=rate_bps,
+        message_bytes=(
+            _require_positive_int(
+                value["message_bytes"], "workload.background.message_bytes"
+            )
+            if "message_bytes" in value
+            else None
+        ),
+    )
 
 
 def _load_explicit_clr_schedule(
@@ -1403,27 +1441,35 @@ def _link_bits_per_second(link_rate: str) -> int:
 
 def background_flows(profile: Profile) -> list[dict[str, int]]:
     """The background load's flows, sent with each of the all-to-all's
-    collectives (Background): one per host outside the group, its size what a
-    member sends to the members on other leaves; none without it."""
+    collectives (Background): one per sending host outside the group, its
+    size the pattern's message_bytes, or under leaf_shift what a member sends
+    to the members on other leaves; none without it."""
     all_to_all = profile.workload.all_to_all
     if all_to_all is None or all_to_all.background is None:
         return []
+    background = all_to_all.background
     hosts_per_leaf = profile.network.hosts_per_leaf
     leaves = profile.ranks // hosts_per_leaf
     members = set(all_to_all_members(profile))
-    size = all_to_all.message_bytes * (len(members) - all_to_all.hosts)
+    size = (
+        all_to_all.message_bytes * (len(members) - all_to_all.hosts)
+        if background.message_bytes is None
+        else background.message_bytes
+    )
     flows = []
     for rank in range(profile.ranks):
         if rank in members:
             continue
         leaf, index = divmod(rank, hosts_per_leaf)
-        destination = ((leaf + 1 + index % (leaves - 1)) % leaves) * hosts_per_leaf + index
+        destination = background.destination(leaf, index, leaves, hosts_per_leaf)
+        if destination is None:
+            continue
         flows.append(
             {
                 "src": rank,
                 "dst": destination,
                 "size_bytes": size,
-                "rate_bps": all_to_all.background.rate_bps,
+                "rate_bps": background.rate_bps,
                 "priority_group": 3,
             }
         )

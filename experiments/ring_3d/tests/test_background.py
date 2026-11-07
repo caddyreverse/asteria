@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -27,9 +28,10 @@ HOLD = {
 }
 EVERY_LEAF = list(range(8))
 BACKGROUND = {"pattern": "leaf_shift", "rate": "350Gbps"}
+FAN_IN = {"pattern": "leaf_fan_in", "rate": "350Gbps", "message_bytes": 131_072}
 
 
-def _job(hosts: int = 2, background: dict[str, Any] | None = BACKGROUND,
+def _job(hosts: int = 2, background: Any = BACKGROUND,
          **group: Any) -> dict[str, Any]:
     """64 ranks on eight leaves of eight hosts, the first hosts of each leaf
     the all-to-all's group, the rest the background's."""
@@ -116,11 +118,38 @@ class BackgroundTests(unittest.TestCase):
             {"pattern": "leaf_shift", "rate_bps": 350_000_000_000},
         )
 
+    def test_leaf_fan_in_sends_every_other_leaf_to_leaf_0(self) -> None:
+        manifest, experiment, _ = _generated(_job(background=FAN_IN))
+        flows = experiment["background"]["flows"]
+        members = {leaf * 8 + host for leaf in range(8) for host in range(2)}
+        self.assertEqual(len(flows), 7 * 6)
+        self.assertEqual({flow["src"] for flow in flows}, set(range(8, 64)) - members)
+        for flow in flows:
+            with self.subTest(src=flow["src"]):
+                self.assertEqual(flow["dst"], flow["src"] % 8)
+                self.assertEqual(flow["size_bytes"], 131_072)
+                self.assertEqual(flow["rate_bps"], 350_000_000_000)
+                self.assertEqual(flow["priority_group"], 3)
+        # Each of leaf 0's six background hosts receives one flow from each other leaf.
+        self.assertEqual(Counter(flow["dst"] for flow in flows), {dst: 7 for dst in range(2, 8)})
+        self.assertEqual(
+            manifest["workload"]["background"],
+            {"pattern": "leaf_fan_in", "rate_bps": 350_000_000_000, "message_bytes": 131_072},
+        )
+
     def test_background_refusals(self) -> None:
         for document, message in (
-            (_job(background={"pattern": "ring", "rate": "350Gbps"}), "pattern must be 'leaf_shift'"),
+            (_job(background=["leaf_fan_in", "350Gbps"]), "background must be an object"),
+            (_job(background={"pattern": "ring", "rate": "350Gbps"}), "pattern must be 'leaf_shift' or 'leaf_fan_in'"),
+            (_job(background={"pattern": ["leaf_fan_in"], "rate": "350Gbps"}),
+             "pattern must be 'leaf_shift' or 'leaf_fan_in'"),
             (_job(background={"pattern": "leaf_shift", "rate": "350"}), "rate must be a rate"),
             (_job(background={"pattern": "leaf_shift"}), "exactly \\['pattern', 'rate'\\]"),
+            (_job(background={**BACKGROUND, "message_bytes": 131_072}), "exactly \\['pattern', 'rate'\\]"),
+            (_job(background={"pattern": "leaf_fan_in", "rate": "350Gbps"}),
+             "exactly \\['message_bytes', 'pattern', 'rate'\\]"),
+            (_job(background={**FAN_IN, "message_bytes": 0}), "message_bytes must be a positive integer"),
+            (_job(background={**FAN_IN, "message_bytes": True}), "message_bytes must be a positive integer"),
             (_job(background={"pattern": "leaf_shift", "rate": "500Gbps"}), "at most network.link_rate"),
             (_job(hosts=8), "group.hosts below network.hosts_per_leaf"),
         ):
