@@ -666,6 +666,7 @@ void copy_transport_counters(AstraSimNs3::FlowRecord& flow,
     flow.duplicate_repairs = q->m_duplicate_repairs;
     flow.data_arrivals = rx ? rx->m_data_arrivals : 0;
     flow.folded_arrivals = rx ? rx->m_folded_arrivals : 0;
+    flow.exploration_copies = q->m_exploration_copies;
     flow.end_time_ns = Simulator::Now().GetNanoSeconds();
 }
 

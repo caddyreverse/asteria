@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "name": "ring-3d-spray-copies-16",
+  "parallelism": {
+    "tp": 1,
+    "pp": 1,
+    "dp": 16
+  },
+  "steps": 4,
+  "compute_duration_us": 0,
+  "tp_all_reduce_bytes": 0,
+  "pp_bytes": 0,
+  "seed": 1,
+  "selection_policy": {
+    "p_low": 0.0,
+    "p_high": 0.0,
+    "domain": "admission"
+  },
+  "workload": {
+    "kind": "all_to_all",
+    "group": {
+      "leaves": [
+        0,
+        1
+      ],
+      "hosts": 8
+    },
+    "message_bytes": 262144,
+    "iterations": 4,
+    "compute_ns": 20000,
+    "dataset_splits": 1
+  },
+  "network": {
+    "topology": "clos",
+    "hosts_per_leaf": 8,
+    "spine_count": 8,
+    "link_rate": "400Gbps",
+    "host_link_delay_ns": 1000,
+    "switch_link_delay_ns": 2000,
+    "switch": {
+      "profile": "ue"
+    },
+    "fabric": {
+      "buffer_size_mb": 1024,
+      "pfc_enabled": false,
+      "headroom_factor": 0
+    },
+    "packet_trimming": {
+      "mode": "ftd"
+    },
+    "transport_recovery": {
+      "retransmission_timeout_ns": 123240,
+      "max_retransmission_retries": 1024,
+      "selective_repair": true
+    },
+    "load_balancing": {
+      "mode": "spray_uniform",
+      "selector": "reps_hold",
+      "loss_thresholds": [
+        0.25,
+        0.5,
+        1.0
+      ],
+      "loss_interval_ns": 24648,
+      "loss_hold_clean_sentinels": 1024,
+      "held_exploration": "sentinel",
+      "held_sentinel_interval_ns": 20000,
+      "sentinel_mode": "duplicate"
+    },
+    "link_failures": [
+      {
+        "model": "gray",
+        "error_rate": 0.2,
+        "start_ns": 0,
+        "spine": 3,
+        "leaf": 0,
+        "direction": "down",
+        "loss_unit": "byte"
+      }
+    ],
+    "packet_payload_bytes": 4096
+  },
+  "microburst_enabled": false,
+  "microburst_bytes": 33554432,
+  "microburst_flow_count": 7,
+  "microburst_destination_rank": 4,
+  "microburst_offset_spacing_ns": 0
+}

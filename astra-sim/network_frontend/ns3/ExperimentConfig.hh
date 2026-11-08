@@ -608,6 +608,10 @@ struct FlowRecord {
     // one. The second is zero where the identification names no spine.
     uint64_t data_arrivals = 0;
     uint64_t folded_arrivals = 0;
+    // Copies of data packets the path selector sent on a second spine
+    // beside the data send, counted as each leaves the sender. Zero for a
+    // selector that takes none.
+    uint32_t exploration_copies = 0;
     uint64_t start_time_ns = 0;
     uint64_t end_time_ns = 0;
     FlowTerminalOutcome terminal_outcome = FlowTerminalOutcome::Pending;
@@ -679,7 +683,8 @@ class ExperimentTelemetry {
                "delivered_bytes,cc_exempt,"
                "cc_exempt_granted_ns,cc_signal_withheld,"
                "allowance_gone_reports,cc_transitions,cc_obeying_ns,"
-               "duplicate_repairs,data_arrivals,folded_arrivals\n";
+               "duplicate_repairs,data_arrivals,folded_arrivals,"
+               "exploration_copies\n";
         rank_completion << "rank,completion_time_ns\n";
         collective_events
             << "rank,parallelism_domain,collective_type,training_step,"
@@ -731,7 +736,7 @@ class ExperimentTelemetry {
                     << flow.cc_transitions << ',' << flow.cc_obeying_ns
                     << ',' << flow.duplicate_repairs << ','
                     << flow.data_arrivals << ',' << flow.folded_arrivals
-                    << '\n';
+                    << ',' << flow.exploration_copies << '\n';
     }
 
     void record_collective_completion(
